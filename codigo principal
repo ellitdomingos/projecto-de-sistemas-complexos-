@@ -1,0 +1,167 @@
+import numpy as np
+import networkx as nx
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from collections import defaultdict
+from matplotlib.colors import ListedColormap
+
+# Configurações fixas
+num_agents = 200  # Número fixo de agentes
+num_steps = 100  # Número fixo de steps
+num_opinions = 4  # Número reduzido de opiniões
+
+
+def run_simulation(seed):
+    np.random.seed(seed)
+
+    opinion_threshold = 0.3
+    num_leader_opinions = num_opinions  # Opiniões possíveis para líderes
+    num_follower_opinions = num_opinions  # Opiniões possíveis para seguidores
+
+    # Criando o grafo de Watts-Strogatz
+    G = nx.watts_strogatz_graph(n=num_agents, k=6, p=0.1, seed=seed)  # Seed para garantir a mesma estrutura de rede
+    agent_types = np.random.choice(['Leader', 'Follower'], size=num_agents)  # Distribuição de tipos de agentes
+    opinions = np.array([np.random.randint(1, num_leader_opinions + 1) if typ == 'Leader' else np.random.randint(1,
+                                                                                                                 num_follower_opinions + 1)
+                         for typ in agent_types])  # Atribuição de opiniões iniciais
+
+    def update_opinions(G, opinions, agent_types):
+        new_opinions = opinions.copy()
+        for node in G.nodes():
+            neighbors = list(G[node])
+            if neighbors:
+                neighbor_opinions = opinions[neighbors]
+                neighbor_types = agent_types[neighbors]
+
+                # Processamento de líderes e seguidores
+                leader_indices = np.where(neighbor_types == 'Leader')[0]
+                leader_opinions = neighbor_opinions[leader_indices] if leader_indices.size > 0 else np.array([])
+                if leader_opinions.size > 0:
+                    leader_common_opinion = np.bincount(leader_opinions).argmax()
+                    leader_common_count = np.bincount(leader_opinions)[leader_common_opinion]
+                    leader_influence = leader_common_count / len(leader_opinions)
+                else:
+                    leader_common_opinion = None
+                    leader_influence = 0
+
+                follower_indices = np.where(neighbor_types == 'Follower')[0]
+                follower_opinions = neighbor_opinions[follower_indices] if follower_indices.size > 0 else np.array([])
+                if follower_opinions.size > 0:
+                    follower_common_opinion = np.bincount(follower_opinions).argmax()
+                    follower_common_count = np.bincount(follower_opinions)[follower_common_opinion]
+                    follower_influence = follower_common_count / len(follower_opinions)
+                else:
+                    follower_common_opinion = None
+                    follower_influence = 0
+
+                if leader_influence > follower_influence:
+                    new_opinions[node] = leader_common_opinion
+                elif follower_influence >= leader_influence:
+                    new_opinions[node] = follower_common_opinion
+
+        return new_opinions
+
+    # Armazenar a percentagem de cada opinião a cada passo
+    opinion_percentages = defaultdict(list)
+    opinion_changes = [opinions.copy()]
+
+    for step in range(num_steps):
+        opinions = update_opinions(G, opinions, agent_types)
+        opinion_changes.append(opinions.copy())
+        unique, counts = np.unique(opinions, return_counts=True)
+        percentages = counts / num_agents
+        for u in range(1, max(num_leader_opinions, num_follower_opinions) + 1):
+            if u in unique:
+                opinion_percentages[u].append(percentages[np.where(unique == u)[0][0]])
+            else:
+                opinion_percentages[u].append(0)
+
+    # Retorna os parâmetros iniciais e resultados finais para verificação
+    return {
+        'num_agents': num_agents,
+        'num_steps': num_steps,
+        'agent_types': agent_types,
+        'opinion_percentages': opinion_percentages,
+        'opinion_changes': opinion_changes,
+        'G': G,  # Adiciona a estrutura da rede aos resultados retornados
+        'pos': nx.spring_layout(G)  # Calcula o layout da rede
+    }
+
+
+# Função para comparar resultados de duas simulações
+def compare_results(res1, res2):
+    return (res1['num_agents'] == res2['num_agents'] and
+            res1['num_steps'] == res2['num_steps'] and
+            np.array_equal(res1['agent_types'], res2['agent_types']) and
+            res1['opinion_percentages'] == res2['opinion_percentages'])
+
+
+# Executa simulações múltiplas vezes com a mesma seed
+seed = 42
+num_runs = 10
+all_results = [run_simulation(seed) for _ in range(num_runs)]
+
+# Verifica se todos os resultados são idênticos
+consistent = all(compare_results(all_results[0], result) for result in all_results)
+
+if consistent:
+    print(f"Os resultados são idênticos em {num_runs} execuções. A seed garante reprodutibilidade.")
+else:
+    print(f"Os resultados não são idênticos em {num_runs} execuções. Verifique a implementação da seed.")
+
+# Salvar os resultados de todas as execuções em arquivos Excel
+for i, result in enumerate(all_results):
+    initial_params_df = pd.DataFrame({
+        'Agent ID': range(1, result['num_agents'] + 1),
+        'Agent Type': result['agent_types'],
+    })
+    opinion_percentages_df = pd.DataFrame(result['opinion_percentages'])
+    initial_params_df.to_excel(f'initial_parameters_run_{i + 1}.xlsx', index=False)
+    opinion_percentages_df.to_excel(f'opinion_percentages_run_{i + 1}.xlsx', index=False)
+
+# Plotar percentagens das opiniões
+# Carregar dados de uma execução para plotar
+opinion_percentages_df = pd.read_excel('opinion_percentages_run_1.xlsx')
+
+# Plotar percentagens de cada opinião ao longo do tempo
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 8))
+
+# Definir a rede e o layout fora da função update para evitar redefinição
+G = all_results[0]['G']
+pos = all_results[0]['pos']
+opinion_changes = all_results[0]['opinion_changes']
+
+
+def update(num):
+    global opinions
+    opinions = opinion_changes[num]
+    ax1.clear()
+    ax2.clear()
+
+    # Ajuste das cores de acordo com a proporção das opiniões
+    unique, counts = np.unique(opinions, return_counts=True)
+    percentages = counts / num_agents
+    cmap = ListedColormap(plt.cm.get_cmap('tab10').colors[:len(unique)])
+    colors = [cmap(opinion - 1) for opinion in opinions]
+
+    node_sizes = [100 if all_results[0]['agent_types'][i] == 'Leader' else 50 for i in
+                  range(all_results[0]['num_agents'])]
+    nx.draw(G, pos, node_color=colors, node_size=node_sizes, ax=ax1, edge_color='gray')
+    ax1.set_title(f"Network at Step {num}")
+
+    # Atualizar gráfico de percentagens
+    for column in opinion_percentages_df:
+        ax2.plot(opinion_percentages_df.index[:num], opinion_percentages_df[column][:num], label=f'Opinião {column}')
+
+    ax2.set_xlabel('Passo da Simulação')
+    ax2.set_ylabel('Percentagem de Opinião')
+    ax2.set_title('Evolução das Percentagens de Opiniões ao Longo do Tempo')
+    ax2.legend()
+
+    return ax1, ax2
+
+
+ani = FuncAnimation(fig, update, frames=num_steps, repeat=False)
+plt.tight_layout()
+plt.show()
