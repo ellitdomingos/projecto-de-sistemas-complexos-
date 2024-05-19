@@ -1,0 +1,170 @@
+import numpy as np
+import networkx as nx
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.colors import ListedColormap
+from scipy.stats import ttest_ind
+
+# Função para rodar a simulação
+def run_simulation(seed, num_agents=100, num_steps=100):
+    np.random.seed(seed)
+
+    opinion_threshold = 0.3
+    num_leader_opinions = 4
+    num_follower_opinions = 4
+
+    # Garantir que a seed é um valor inteiro apropriado
+    G = nx.watts_strogatz_graph(n=num_agents, k=6, p=0.1, seed=int(seed))
+    agent_types = np.random.choice(['Leader', 'Follower'], size=num_agents)
+    opinions = np.array([np.random.randint(1, num_leader_opinions + 1) if typ == 'Leader' else np.random.randint(1, num_follower_opinions + 1)
+                         for typ in agent_types])
+
+    def update_opinions(G, opinions, agent_types):
+        new_opinions = opinions.copy()
+        for node in G.nodes():
+            neighbors = list(G[node])
+            if neighbors:
+                neighbor_opinions = opinions[neighbors]
+                neighbor_types = agent_types[neighbors]
+
+                leader_indices = np.where(neighbor_types == 'Leader')[0]
+                leader_opinions = neighbor_opinions[leader_indices] if leader_indices.size > 0 else np.array([])
+                if leader_opinions.size > 0:
+                    leader_common_opinion = np.bincount(leader_opinions).argmax()
+                    leader_common_count = np.bincount(leader_opinions)[leader_common_opinion]
+                    leader_influence = leader_common_count / len(leader_opinions)
+                else:
+                    leader_common_opinion = None
+                    leader_influence = 0
+
+                follower_indices = np.where(neighbor_types == 'Follower')[0]
+                follower_opinions = neighbor_opinions[follower_indices] if follower_indices.size > 0 else np.array([])
+                if follower_opinions.size > 0:
+                    follower_common_opinion = np.bincount(follower_opinions).argmax()
+                    follower_common_count = np.bincount(follower_opinions)[follower_common_opinion]
+                    follower_influence = follower_common_count / len(follower_opinions)
+                else:
+                    follower_common_opinion = None
+                    follower_influence = 0
+
+                if leader_influence > follower_influence:
+                    new_opinions[node] = leader_common_opinion
+                elif follower_influence >= leader_influence:
+                    new_opinions[node] = follower_common_opinion
+
+        return new_opinions
+
+    all_opinions = [opinions.copy()]
+    for step in range(num_steps):
+        opinions = update_opinions(G, opinions, agent_types)
+        all_opinions.append(opinions.copy())
+
+    return {
+        'agent_types': agent_types,
+        'all_opinions': all_opinions
+    }
+
+# Função para calcular as percentagens de opiniões
+def calculate_opinion_percentages(opinions, agent_types, num_steps, num_opinions):
+    opinion_percentages = {f'Opiniao {i+1} (Líder)': [] for i in range(num_opinions)}
+    opinion_percentages.update({f'Opiniao {i+1} (Seguidor)': [] for i in range(num_opinions)})
+
+    for step in range(num_steps):
+        for i in range(num_opinions):
+            leader_count = np.sum((opinions[step] == (i + 1)) & (agent_types == 'Leader'))
+            follower_count = np.sum((opinions[step] == (i + 1)) & (agent_types == 'Follower'))
+            total_leader_count = np.sum(agent_types == 'Leader')
+            total_follower_count = np.sum(agent_types == 'Follower')
+            opinion_percentages[f'Opiniao {i+1} (Líder)'].append(leader_count / total_leader_count)
+            opinion_percentages[f'Opiniao {i+1} (Seguidor)'].append(follower_count / total_follower_count)
+
+    return opinion_percentages
+
+# Função para realizar o teste t de Student
+def perform_t_test(opinion_percentages, num_opinions):
+    results = []
+    for i in range(num_opinions):
+        leader_key = f'Opiniao {i+1} (Líder)'
+        follower_key = f'Opiniao {i+1} (Seguidor)'
+        t_stat, p_value = ttest_ind(opinion_percentages[leader_key], opinion_percentages[follower_key])
+        results.append((leader_key, follower_key, t_stat, p_value))
+
+    return results
+
+# Executar múltiplas simulações
+num_runs = 10
+seeds = np.random.randint(0, 10000, num_runs)
+num_agents = 100
+num_steps = 100
+num_opinions = 4
+
+all_opinion_percentages = []
+
+for seed in seeds:
+    result = run_simulation(seed, num_agents=num_agents, num_steps=num_steps)
+    opinion_percentages = calculate_opinion_percentages(result['all_opinions'], result['agent_types'], num_steps, num_opinions)
+    all_opinion_percentages.append(opinion_percentages)
+
+# Salvar os resultados em arquivos Excel
+for i, opinion_percentages in enumerate(all_opinion_percentages):
+    df = pd.DataFrame(opinion_percentages)
+    df.to_excel(f'opinion_percentages_run_{i+1}.xlsx', index=False)
+
+# Calcular as médias e desvios padrão
+def calculate_mean_std(all_opinion_percentages, num_opinions):
+    mean_std_results = {f'Opiniao {i+1} (Líder)': {'mean': [], 'std': []} for i in range(num_opinions)}
+    mean_std_results.update({f'Opiniao {i+1} (Seguidor)': {'mean': [], 'std': []} for i in range(num_opinions)})
+
+    for i in range(num_opinions):
+        leader_key = f'Opiniao {i+1} (Líder)'
+        follower_key = f'Opiniao {i+1} (Seguidor)'
+        leader_values = np.array([op[leader_key] for op in all_opinion_percentages])
+        follower_values = np.array([op[follower_key] for op in all_opinion_percentages])
+        mean_std_results[leader_key]['mean'] = np.mean(leader_values, axis=0)
+        mean_std_results[leader_key]['std'] = np.std(leader_values, axis=0)
+        mean_std_results[follower_key]['mean'] = np.mean(follower_values, axis=0)
+        mean_std_results[follower_key]['std'] = np.std(follower_values, axis=0)
+
+    return mean_std_results
+
+mean_std_results = calculate_mean_std(all_opinion_percentages, num_opinions)
+
+# Salvar as médias e desvios padrão em arquivos Excel
+for opinion_key, values in mean_std_results.items():
+    df = pd.DataFrame(values)
+    df.to_excel(f'{opinion_key}_mean_std.xlsx', index=False)
+
+# Realizar o teste t de Student nos dados combinados
+combined_opinion_percentages = {key: [] for key in all_opinion_percentages[0].keys()}
+
+for opinion_percentages in all_opinion_percentages:
+    for key, values in opinion_percentages.items():
+        combined_opinion_percentages[key].extend(values)
+
+t_test_results = perform_t_test(combined_opinion_percentages, num_opinions)
+
+# Salvar resultados do teste t em um arquivo Excel
+t_test_df = pd.DataFrame(t_test_results, columns=['Leader Key', 'Follower Key', 't-statistic', 'p-value'])
+t_test_df.to_excel('t_test_results.xlsx', index=False)
+
+# Visualizar as médias e desvios padrão
+fig, ax = plt.subplots(figsize=(12, 6))
+
+for i in range(num_opinions):
+    leader_key = f'Opiniao {i+1} (Líder)'
+    follower_key = f'Opiniao {i+1} (Seguidor)'
+    ax.plot(mean_std_results[leader_key]['mean'], label=leader_key, linestyle='-')
+    ax.fill_between(range(num_steps),
+                    mean_std_results[leader_key]['mean'] - mean_std_results[leader_key]['std'],
+                    mean_std_results[leader_key]['mean'] + mean_std_results[leader_key]['std'], alpha=0.2)
+    ax.plot(mean_std_results[follower_key]['mean'], label=follower_key, linestyle='--')
+    ax.fill_between(range(num_steps),
+                    mean_std_results[follower_key]['mean'] - mean_std_results[follower_key]['std'],
+                    mean_std_results[follower_key]['mean'] + mean_std_results[follower_key]['std'], alpha=0.2)
+
+ax.set_title('Evolução das Médias e Desvios Padrão das Percentagens de Opiniões')
+ax.set_xlabel('Passo da Simulação')
+ax.set_ylabel('Percentagem de Opinião')
+ax.legend()
+plt.show()
